@@ -289,9 +289,9 @@ class CaMeLIterable(Generic[_IT, _V], CaMeLValue[_IT]):
         inner_element = next((el for el in self.iterate_python() if el.eq(other)), None)
         if inner_element is not None:
             return CaMeLTrue(Capabilities.camel(), (self, other, inner_element))
-        # Add metadata from elements as well as False reveal something about all of them
-        # (i.e., that none of them is `other`).
-        return CaMeLFalse(Capabilities.camel(), (*self.get_dependencies()[0], other))
+        # A False result reveals that no element matches, so it depends on the
+        # container, its contents, and the candidate.
+        return CaMeLFalse(Capabilities.camel(), (self, *self.get_dependencies()[0], other))
 
 
 _ST = TypeVar("_ST", bound=Sequence)
@@ -818,9 +818,9 @@ class CaMeLStr(
             raise TypeError(f"in <string>' requires string as left operand, not {other.raw_type}")
         if other.raw in self.raw:
             return CaMeLTrue(Capabilities.camel(), (self, *other.get_dependencies()[0]))
-        # Add metadata from elements as well as False reveal something about all of them
-        # (i.e., that none of them is `other`).
-        return CaMeLFalse(Capabilities.camel(), (*self.get_dependencies()[0], other))
+        # A False result reveals that no element matches, so it depends on the
+        # container, its contents, and the candidate.
+        return CaMeLFalse(Capabilities.camel(), (self, *self.get_dependencies()[0], other))
 
     @classmethod
     def from_raw(cls, string: str, metadata: Capabilities, dependencies: tuple[CaMeLValue, ...]) -> Self:
