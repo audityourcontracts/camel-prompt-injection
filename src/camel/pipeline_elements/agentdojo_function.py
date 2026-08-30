@@ -122,12 +122,39 @@ def _get_metadata_for_ad(
     result: _T,
     tool: str,
 ) -> _T:
+    def _new_with_metadata_recursive(item: _T, metadata: Capabilities) -> _T:
+        """Relabel content reachable from ``item``, but not its dependencies."""
+        memo: dict[int, value.CaMeLValue] = {}
+
+        def visit(node: value.CaMeLValue) -> value.CaMeLValue:
+            if (converted := memo.get(id(node))) is not None:
+                return converted
+
+            converted = node.new_with_metadata(metadata)
+            memo[id(node)] = converted
+
+            if isinstance(node, value.CaMeLMapping):
+                converted._python_value = {visit(key): visit(child) for key, child in node._python_value.items()}
+            elif isinstance(node, value.CaMeLList):
+                converted._python_value = [visit(child) for child in node._python_value]
+            elif isinstance(node, value.CaMeLSet):
+                converted._python_value = {visit(child) for child in node._python_value}
+            elif isinstance(node, value.CaMeLStr | value.CaMeLTuple):
+                converted._python_value = tuple(visit(child) for child in node._python_value)
+
+            return converted
+
+        return typing.cast(_T, visit(item))
+
     match result.raw:
-        case list():
-            converted_list = [_get_metadata_for_ad(d, tool) for d in result._python_value]
-            return result.new_with_python_value(converted_list).new_with_metadata(
-                Capabilities(frozenset({sources.Tool(tool, frozenset())}), readers.Public())
-            )
+        case list() | tuple() | set():
+            converted_items = [_get_metadata_for_ad(d, tool) for d in result._python_value]
+            collection_metadata = Capabilities(frozenset({sources.Tool(tool, frozenset())}), readers.Public())
+            if isinstance(result, value.CaMeLList):
+                return result.new_with_python_value(converted_items).new_with_metadata(collection_metadata)
+            if isinstance(result, value.CaMeLSet):
+                return result.new_with_python_value(set(converted_items)).new_with_metadata(collection_metadata)
+            return result.new_with_python_value(tuple(converted_items)).new_with_metadata(collection_metadata)
         case str() if tool in {"cancel_calendar_event", "delete_email", "get_current_day", "get_iban"}:
             # Tools that only return a confirmation with the ID of the deleted object, or the tool
             # that returns the current day. None of them is private and they can't propagate a prompt injection
@@ -150,15 +177,25 @@ def _get_metadata_for_ad(
             return result.new_with_metadata(Capabilities(frozenset({sources.Tool(tool, frozenset())}), frozenset()))
         case dict() if tool in {"get_user_info", "update_password", "update_user_info", "get_user_information"}:
             # security policy imposes that user info being updated comes from the user (or can't be updated at all)
-            return result.new_with_metadata(
-                Capabilities(frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.User}))}), frozenset())
+            return _new_with_metadata_recursive(
+                result,
+                Capabilities(frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.User}))}), frozenset()),
             )
         case dict() if tool in _UNTRUSTED_TRAVEL_TOOLS:
             # reviews are public
-            return result.new_with_metadata(
-                Capabilities(frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.User}))}), readers.Public())
+            return _new_with_metadata_recursive(
+                result,
+                Capabilities(frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.User}))}), readers.Public()),
             )
-        case dict() | str() if tool in _TRUSTED_TRAVEL_TOOLS:
+        case dict() if tool in _TRUSTED_TRAVEL_TOOLS:
+            # All travel tool outputs are trusted except from reviews, and the data is public
+            return _new_with_metadata_recursive(
+                result,
+                Capabilities(
+                    frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.TrustedToolSource}))}), readers.Public()
+                ),
+            )
+        case str() if tool in _TRUSTED_TRAVEL_TOOLS:
             # All travel tool outputs are trusted except from reviews, and the data is public
             return result.new_with_metadata(
                 Capabilities(
