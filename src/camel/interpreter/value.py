@@ -1128,6 +1128,7 @@ class CaMeLClass(Generic[_T], CaMeLCallable[_T], HasAttrs):
         self,
         namespace: "ns.Namespace",
         *args: Any,
+        _ctor_deps: tuple["CaMeLValue", ...] = (),
         **kwargs: dict[str, Any],
     ) -> "CaMeLClassInstance[_T]":
         return CaMeLClassInstance(
@@ -1135,7 +1136,10 @@ class CaMeLClass(Generic[_T], CaMeLCallable[_T], HasAttrs):
             self,
             self._metadata,
             namespace,
-            (self,),
+            # Pydantic needs raw arguments, but the instance dependency chain
+            # must retain the wrapped constructor arguments so aggregate
+            # metadata includes the fields' labels.
+            (self, *_ctor_deps),
         )
 
     def __eq__(self, other: object) -> bool:
@@ -1150,7 +1154,10 @@ class CaMeLClass(Generic[_T], CaMeLCallable[_T], HasAttrs):
     def call(
         self, args: CaMeLTuple, kwargs: CaMeLDict[CaMeLStr, CaMeLValue], namespace: "ns.Namespace"
     ) -> tuple["CaMeLClassInstance[_T]", dict[str, Any]]:
-        return self.init(namespace, *args.raw, **kwargs.raw), self._make_args_by_keyword(args, kwargs)
+        ctor_deps = (*args.iterate_python(), *kwargs._python_value.values())
+        return self.init(namespace, *args.raw, _ctor_deps=ctor_deps, **kwargs.raw), self._make_args_by_keyword(
+            args, kwargs
+        )
 
     def make_args_by_keyword_preserve_values(
         self, args: "CaMeLTuple", kwargs: "CaMeLDict[CaMeLStr, CaMeLValue]"
@@ -1263,7 +1270,9 @@ class CaMeLClassInstance(Generic[_T], HasSetField[_T]):
             return self._class._methods[name]
         attr = getattr(self._python_value, name)
         if not isinstance(attr, CaMeLValue):
-            return value_from_raw(attr, Capabilities.camel(), self._namespace, ())
+            # Wrap raw fields with the instance's metadata and an instance
+            # dependency, matching the dependency behavior of wrapped fields.
+            return value_from_raw(attr, self._metadata, self._namespace, (self,))
         return attr.new_with_dependencies((self,))
 
     def attr_names(self) -> set[str]:
