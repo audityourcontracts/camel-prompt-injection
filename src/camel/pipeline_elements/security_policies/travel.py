@@ -70,11 +70,11 @@ class TravelSecurityPolicyEngine(AgentDojoSecurityPolicyEngine[TravelEnvironment
             ),
             (
                 "reserve_car_rental",
-                make_trusted_fields_policy(("restaurant", "start_time")),
+                make_trusted_fields_policy(("company", "start_time", "end_time")),
             ),
             (
                 "reserve_restaurant",
-                make_trusted_fields_policy(("company", "start_time", "end_time")),
+                make_trusted_fields_policy(("restaurant", "start_time")),
             ),
         ]
         self.no_side_effect_tools = security_policy.NO_SIDE_EFFECT_TOOLS | workspace_travel_no_side_effect_tools
