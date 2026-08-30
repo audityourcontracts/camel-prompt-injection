@@ -1030,7 +1030,8 @@ def _eval_comprehensions(
     dependencies: Iterable[value.CaMeLValue],
     eval_args: EvalArgs,
     evaled_iterators: tuple[value.CaMeLValue, ...],
-) -> tuple[EvalResult, tuple[value.CaMeLValue, ...]]:
+    evaled_filters: tuple[value.CaMeLValue, ...] = (),
+) -> tuple[EvalResult, tuple[value.CaMeLValue, ...], tuple[value.CaMeLValue, ...]]:
     if not generators:
         # Base case: no more generators
         elts_results = []
@@ -1039,15 +1040,19 @@ def _eval_comprehensions(
                 elt, namespace, tool_calls_chain, dependencies, eval_args
             )
             if isinstance(elt_res, result.Error):
-                return EvalResult(elt_res, namespace, tool_calls_chain, dependencies), ()
+                return EvalResult(elt_res, namespace, tool_calls_chain, dependencies), (), ()
             elts_results.append(value.CaMeLList([elt_res.value], Capabilities.default(), ()))
 
-        return EvalResult(
-            result.Ok(value.CaMeLTuple(elts_results, Capabilities.default(), ())),
-            namespace,
-            tool_calls_chain,
-            dependencies,
-        ), evaled_iterators
+        return (
+            EvalResult(
+                result.Ok(value.CaMeLTuple(elts_results, Capabilities.default(), ())),
+                namespace,
+                tool_calls_chain,
+                dependencies,
+            ),
+            evaled_iterators,
+            evaled_filters,
+        )
 
     current_comprehension = generators[0]
     iterable_res, namespace, tool_calls_chain, dependencies = camel_eval(
@@ -1058,22 +1063,26 @@ def _eval_comprehensions(
         eval_args,
     )
     if isinstance(iterable_res, result.Error):
-        return EvalResult(iterable_res, namespace, tool_calls_chain, dependencies), ()
+        return EvalResult(iterable_res, namespace, tool_calls_chain, dependencies), (), ()
 
     iterable = iterable_res.value
     if not isinstance(iterable, value.CaMeLIterable | value.CaMeLMapping):
-        return EvalResult(
-            result.Error(
-                CaMeLException(
-                    TypeError(f"'{iterable.raw_type}' object is not iterable"),
-                    (current_comprehension.iter,),  # Use the iter node for error reporting
-                    (iterable,),
-                )
+        return (
+            EvalResult(
+                result.Error(
+                    CaMeLException(
+                        TypeError(f"'{iterable.raw_type}' object is not iterable"),
+                        (current_comprehension.iter,),  # Use the iter node for error reporting
+                        (iterable,),
+                    )
+                ),
+                namespace,
+                tool_calls_chain,
+                dependencies,
             ),
-            namespace,
-            tool_calls_chain,
-            dependencies,
-        ), ()
+            (),
+            (),
+        )
 
     accumulated_results: tuple[value.CaMeLList, ...] = tuple(
         value.CaMeLList([], Capabilities.camel(), ()) for _ in elts
@@ -1089,30 +1098,37 @@ def _eval_comprehensions(
             eval_args,
         )
         if isinstance(assign_res, result.Error):
-            return EvalResult(assign_res, namespace, tool_calls_chain, dependencies), ()
+            return EvalResult(assign_res, namespace, tool_calls_chain, dependencies), (), ()
 
-        # evaluate ifs
+        # Retain every evaluated filter value as an expression-local
+        # dependency. In STRICT mode callers attach these control-flow
+        # dependencies to the result. A false filter is observable through
+        # which elements survive, so it must be retained too.
         all_ifs_true = True
         for if_expr in current_comprehension.ifs:
             if_res, inner_namespace, tool_calls_chain, dependencies = camel_eval(
                 if_expr, inner_namespace, tool_calls_chain, dependencies, eval_args
             )
             if isinstance(if_res, result.Error):
-                return EvalResult(if_res, namespace, tool_calls_chain, dependencies), ()
+                return EvalResult(if_res, namespace, tool_calls_chain, dependencies), (), ()
+            evaled_filters = (*evaled_filters, if_res.value)
             if not if_res.value.truth().raw:
                 all_ifs_true = False
                 break
         if not all_ifs_true:
             continue
 
-        (recursive_res, resulting_namespace, tool_calls_chain, dependencies), evaled_iterators = _eval_comprehensions(
-            generators[1:],
-            elts,
-            inner_namespace,
-            tool_calls_chain,
-            dependencies,
-            eval_args,
-            evaled_iterators,
+        (recursive_res, resulting_namespace, tool_calls_chain, dependencies), evaled_iterators, evaled_filters = (
+            _eval_comprehensions(
+                generators[1:],
+                elts,
+                inner_namespace,
+                tool_calls_chain,
+                dependencies,
+                eval_args,
+                evaled_iterators,
+                evaled_filters,
+            )
         )
 
         namespace = _restore_or_delete_variables(
@@ -1122,17 +1138,34 @@ def _eval_comprehensions(
         )
 
         if isinstance(recursive_res, result.Error):
-            return EvalResult(recursive_res, namespace, tool_calls_chain, dependencies), ()
+            return EvalResult(recursive_res, namespace, tool_calls_chain, dependencies), (), ()
 
         for acc_res, rec_res in zip(accumulated_results, recursive_res.value._python_value):
             acc_res._python_value.extend(rec_res._python_value)
 
-    return EvalResult(
-        result.Ok(value.CaMeLTuple(accumulated_results, Capabilities.default(), ())),
-        namespace,  # Return original namespace, not inner_namespace
-        tool_calls_chain,
-        dependencies,
-    ), (*evaled_iterators, iterable)
+    return (
+        EvalResult(
+            result.Ok(value.CaMeLTuple(accumulated_results, Capabilities.default(), ())),
+            namespace,  # Return original namespace, not inner_namespace
+            tool_calls_chain,
+            dependencies,
+        ),
+        (*evaled_iterators, iterable),
+        evaled_filters,
+    )
+
+
+def _comp_filter_deps(
+    eval_args: EvalArgs, evaled_filters: tuple[value.CaMeLValue, ...]
+) -> tuple[value.CaMeLValue, ...]:
+    """Return comprehension filter dependencies in STRICT mode only.
+
+    Filter values affect which elements are present, but do not propagate to
+    comprehension results in NORMAL mode.
+    """
+    if eval_args.eval_mode == MetadataEvalMode.STRICT:
+        return evaled_filters
+    return ()
 
 
 def _eval_list_comp(
@@ -1142,14 +1175,16 @@ def _eval_list_comp(
     dependencies: Iterable[value.CaMeLValue],
     eval_args: EvalArgs,
 ) -> EvalResult:
-    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators = _eval_comprehensions(
-        node.generators,
-        (node.elt,),
-        namespace,
-        tool_calls_chain,
-        dependencies,
-        eval_args,
-        (),
+    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators, evaled_filters = (
+        _eval_comprehensions(
+            node.generators,
+            (node.elt,),
+            namespace,
+            tool_calls_chain,
+            dependencies,
+            eval_args,
+            (),
+        )
     )
     match evaled_comprehension_res:
         case result.Error():
@@ -1160,7 +1195,11 @@ def _eval_list_comp(
             evaled_comprehension = v
 
     return EvalResult(
-        result.Ok(evaled_comprehension._python_value[0].new_with_dependencies(evaled_iterators)),
+        result.Ok(
+            evaled_comprehension._python_value[0].new_with_dependencies(
+                (*evaled_iterators, *_comp_filter_deps(eval_args, evaled_filters))
+            )
+        ),
         namespace,
         tool_calls_chain,
         dependencies,
@@ -1174,14 +1213,16 @@ def _eval_set_comp(
     dependencies: Iterable[value.CaMeLValue],
     eval_args: EvalArgs,
 ) -> EvalResult:
-    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators = _eval_comprehensions(
-        node.generators,
-        (node.elt,),
-        namespace,
-        tool_calls_chain,
-        dependencies,
-        eval_args,
-        (),
+    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators, evaled_filters = (
+        _eval_comprehensions(
+            node.generators,
+            (node.elt,),
+            namespace,
+            tool_calls_chain,
+            dependencies,
+            eval_args,
+            (),
+        )
     )
     match evaled_comprehension_res:
         case result.Error():
@@ -1194,7 +1235,7 @@ def _eval_set_comp(
     elements = value.CaMeLSet(
         evaled_comprehension._python_value[0].iterate_python(),
         Capabilities.camel(),
-        evaled_iterators,
+        (*evaled_iterators, *_comp_filter_deps(eval_args, evaled_filters)),
     )
 
     return EvalResult(result.Ok(elements), namespace, tool_calls_chain, dependencies)
@@ -1207,14 +1248,16 @@ def _eval_dict_comp(
     dependencies: Iterable[value.CaMeLValue],
     eval_args: EvalArgs,
 ) -> EvalResult:
-    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators = _eval_comprehensions(
-        node.generators,
-        (node.key, node.value),
-        namespace,
-        tool_calls_chain,
-        dependencies,
-        eval_args,
-        (),
+    (evaled_comprehension_res, namespace, tool_calls_chain, dependencies), evaled_iterators, evaled_filters = (
+        _eval_comprehensions(
+            node.generators,
+            (node.key, node.value),
+            namespace,
+            tool_calls_chain,
+            dependencies,
+            eval_args,
+            (),
+        )
     )
     match evaled_comprehension_res:
         case result.Error():
@@ -1228,7 +1271,7 @@ def _eval_dict_comp(
     elements = value.CaMeLDict(
         dict(zip(keys.iterate_python(), values.iterate_python())),
         Capabilities.camel(),
-        evaled_iterators,
+        (*evaled_iterators, *_comp_filter_deps(eval_args, evaled_filters)),
     )
 
     return EvalResult(result.Ok(elements), namespace, tool_calls_chain, dependencies)
