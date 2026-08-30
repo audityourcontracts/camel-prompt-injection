@@ -126,7 +126,7 @@ class WorkspaceSecurityPolicyEngine(AgentDojoSecurityPolicyEngine[WorkspaceEnvir
         # Rationale:
         # The email_id should come from an email that was requested by the user directly
         email_id = kwargs["email_id"]
-        if is_trusted(email_id):
+        if not is_trusted(email_id):
             return Denied("Email to be deleted does not come directly from user")
         return Allowed()
 
