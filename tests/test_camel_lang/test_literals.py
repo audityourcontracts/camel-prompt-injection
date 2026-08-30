@@ -75,6 +75,15 @@ _tuple_list = value.CaMeLList(
     Capabilities.default(),
     (),
 )
+_value_specifier_str_const = value.CaMeLStr(
+    [
+        value._CaMeLChar(".", Capabilities.default(), ()),
+        value._CaMeLChar("1", Capabilities.default(), ()),
+        value._CaMeLChar("f", Capabilities.default(), ()),
+    ],
+    Capabilities.default(),
+    (),
+)
 _value_specifier_str = value.CaMeLStr(
     [
         value._CaMeLChar(".", Capabilities.default(), ()),
@@ -82,7 +91,8 @@ _value_specifier_str = value.CaMeLStr(
         value._CaMeLChar("f", Capabilities.default(), ()),
     ],
     Capabilities.camel(),
-    (),
+    # F2: the format-spec string itself accumulates the literal as a dependency
+    (_value_specifier_str_const,),
 )
 
 
@@ -108,7 +118,26 @@ class TestLiterals:
                     value._CaMeLChar("0", Capabilities.camel(), (_a_1, _value_specifier_str)),
                 ],
                 Capabilities.camel(),
-                (),
+                # F2: every formatted value is a dependency of the result
+                (
+                    value.CaMeLStr(
+                        [
+                            value._CaMeLChar("a", Capabilities.default(), ()),
+                            value._CaMeLChar(" ", Capabilities.default(), ()),
+                        ],
+                        Capabilities.default(),
+                        (),
+                    ),
+                    value.CaMeLStr(
+                        [
+                            value._CaMeLChar("1", Capabilities.camel(), (_a_1, _value_specifier_str)),
+                            value._CaMeLChar(".", Capabilities.camel(), (_a_1, _value_specifier_str)),
+                            value._CaMeLChar("0", Capabilities.camel(), (_a_1, _value_specifier_str)),
+                        ],
+                        Capabilities.camel(),
+                        (_a_1, _value_specifier_str),
+                    ),
+                ),
             ),
             namespace=ns.Namespace(),
             expected_namespace=None,
@@ -123,7 +152,22 @@ class TestLiterals:
                     value._CaMeLChar("1", Capabilities.camel(), (_a_1,)),
                 ],
                 Capabilities.camel(),
-                (),
+                # F2: every formatted value is a dependency of the result
+                (
+                    value.CaMeLStr(
+                        [
+                            value._CaMeLChar("a", Capabilities.default(), ()),
+                            value._CaMeLChar(" ", Capabilities.default(), ()),
+                        ],
+                        Capabilities.default(),
+                        (),
+                    ),
+                    value.CaMeLStr(
+                        [value._CaMeLChar("1", Capabilities.camel(), (_a_1,))],
+                        Capabilities.camel(),
+                        (_a_1,),
+                    ),
+                ),
             ),
             namespace=ns.Namespace({"b": _a_1}),
             expected_namespace=None,
@@ -137,7 +181,19 @@ class TestLiterals:
                     value._CaMeLChar("a", Capabilities.camel(), (_a_string,)),
                 ],
                 Capabilities.camel(),
-                (),
+                # F2: every formatted value is a dependency of the result
+                (
+                    value.CaMeLStr(
+                        [value._CaMeLChar("a", Capabilities.default(), ())],
+                        Capabilities.default(),
+                        (),
+                    ),
+                    value.CaMeLStr(
+                        [value._CaMeLChar("a", Capabilities.camel(), (_a_string,))],
+                        Capabilities.camel(),
+                        (_a_string,),
+                    ),
+                ),
             ),
             namespace=ns.Namespace({"b": _a_string}),
             expected_namespace=None,

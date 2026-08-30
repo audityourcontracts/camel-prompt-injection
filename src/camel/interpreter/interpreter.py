@@ -310,8 +310,11 @@ def _eval_joined_str(
     string = value.CaMeLStr.from_raw("", Capabilities.camel(), ())
 
     for d in evaled_data.iterate_python():
-        string._python_value = (*string._python_value, *d.string()._python_value)
-        # string = string.new_with_dependencies((d,))
+        # Build a fresh accumulator for each component and retain that
+        # component as a dependency even when its string representation is
+        # empty.
+        string = string.new_with_python_value((*string._python_value, *d.string()._python_value))
+        string = string.new_with_dependencies((d,))
 
     return EvalResult(result.Ok(string), namespace, tool_calls_chain, dependencies)
 
