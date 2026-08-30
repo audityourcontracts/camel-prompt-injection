@@ -266,6 +266,7 @@ class CaMeLIterable(Generic[_IT, _V], CaMeLValue[_IT]):
         if id(self) in visited_objects:
             return dependencies, visited_objects
         for el in self._python_value:
+            dependencies += (el,)
             (new_dependencies, visited_objects) = el.get_dependencies(visited_objects | {id(self)})
             dependencies += new_dependencies
         return dependencies, visited_objects | {id(self)}
@@ -350,6 +351,7 @@ class CaMeLMapping(Generic[_MT, _KV, _VV], CaMeLValue[_MT]):
             return dependencies, visited_objects
         visited_objects |= {id(self)}
         for k, v in self._python_value.items():
+            dependencies += (k, v)
             k_dependencies, k_visited_objects = k.get_dependencies(visited_objects)
             v_dependencies, v_visited_objects = v.get_dependencies(k_visited_objects)
             dependencies += k_dependencies + v_dependencies
