@@ -86,6 +86,10 @@ class TravelSecurityPolicyEngine(AgentDojoSecurityPolicyEngine[TravelEnvironment
         if "bcc" in kwargs and isinstance(kwargs["bcc"], CaMeLList):
             recipients = recipients.add(kwargs["bcc"])
 
+        # All primary, CC, and BCC recipient elements must be strings,
+        # including in trusted aggregates.
+        if not all(isinstance(r, CaMeLStr) for r in recipients.iterate_python()):
+            return Denied("All email recipients must be strings.")
         # Email address comes directly from the user
         if is_trusted(recipients):
             return Allowed()
