@@ -1087,6 +1087,8 @@ def _eval_comprehensions(
     accumulated_results: tuple[value.CaMeLList, ...] = tuple(
         value.CaMeLList([], Capabilities.camel(), ()) for _ in elts
     )
+    # Restore loop targets on each exit while retaining other evaluated assignments.
+    assigned_names = _get_assigned_names(current_comprehension.target)
     for element in iterable.iterate_python():
         inner_namespace = dataclasses.replace(namespace)
         assign_res, inner_namespace, tool_calls_chain, dependencies = _assign(
@@ -1110,12 +1112,14 @@ def _eval_comprehensions(
                 if_expr, inner_namespace, tool_calls_chain, dependencies, eval_args
             )
             if isinstance(if_res, result.Error):
+                namespace = _restore_or_delete_variables(namespace, inner_namespace, assigned_names)
                 return EvalResult(if_res, namespace, tool_calls_chain, dependencies), (), ()
             evaled_filters = (*evaled_filters, if_res.value)
             if not if_res.value.truth().raw:
                 all_ifs_true = False
                 break
         if not all_ifs_true:
+            namespace = _restore_or_delete_variables(namespace, inner_namespace, assigned_names)
             continue
 
         (recursive_res, resulting_namespace, tool_calls_chain, dependencies), evaled_iterators, evaled_filters = (
@@ -1134,7 +1138,7 @@ def _eval_comprehensions(
         namespace = _restore_or_delete_variables(
             namespace,
             resulting_namespace,
-            _get_assigned_names(current_comprehension.target),
+            assigned_names,
         )
 
         if isinstance(recursive_res, result.Error):
@@ -1146,7 +1150,7 @@ def _eval_comprehensions(
     return (
         EvalResult(
             result.Ok(value.CaMeLTuple(accumulated_results, Capabilities.default(), ())),
-            namespace,  # Return original namespace, not inner_namespace
+            namespace,  # Outer bindings include evaluated expression effects.
             tool_calls_chain,
             dependencies,
         ),
