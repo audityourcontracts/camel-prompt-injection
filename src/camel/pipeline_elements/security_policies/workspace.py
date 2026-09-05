@@ -23,6 +23,8 @@ from camel.capabilities import can_readers_read_value, get_all_readers, is_trust
 from camel.interpreter.value import CaMeLDict, CaMeLList, CaMeLNone, CaMeLStr, CaMeLValue
 from camel.pipeline_elements.security_policies.agentdojo_security_policies import (
     AgentDojoSecurityPolicyEngine,
+    is_trusted_list_and_elements,
+    validate_email_recipients,
 )
 from camel.security_policy import Allowed, Denied, SecurityPolicyResult
 
@@ -68,18 +70,11 @@ class WorkspaceSecurityPolicyEngine(AgentDojoSecurityPolicyEngine[WorkspaceEnvir
         self.no_side_effect_tools = security_policy.NO_SIDE_EFFECT_TOOLS | workspace_no_side_effect_tools
 
     def send_email_policy(self, tool_name: str, kwargs: Mapping[str, CaMeLValue]) -> SecurityPolicyResult:
-        recipients: CaMeLList[CaMeLStr] = kwargs["recipients"]  # type: ignore
-        if "cc" in kwargs and isinstance(kwargs["cc"], CaMeLList):
-            recipients = recipients.add(kwargs["cc"])
-        if "bcc" in kwargs and isinstance(kwargs["bcc"], CaMeLList):
-            recipients = recipients.add(kwargs["bcc"])
-
-        # All primary, CC, and BCC recipient elements must be strings,
-        # including in trusted aggregates.
-        if not all(isinstance(r, CaMeLStr) for r in recipients.iterate_python()):
-            return Denied("All email recipients must be strings.")
+        recipients = validate_email_recipients(kwargs)
+        if isinstance(recipients, Denied):
+            return recipients
         # Email address comes directly from the user
-        if is_trusted(recipients):
+        if is_trusted_list_and_elements(recipients):
             return Allowed()
         recipients_set = set(recipients.raw)
 

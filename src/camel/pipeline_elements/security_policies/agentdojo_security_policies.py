@@ -21,7 +21,7 @@ from agentdojo.default_suites.v1.workspace.task_suite import (
 from agentdojo.functions_runtime import TaskEnvironment
 
 from camel.capabilities import is_trusted
-from camel.interpreter.value import CaMeLValue
+from camel.interpreter.value import CaMeLList, CaMeLNone, CaMeLStr, CaMeLValue
 from camel.security_policy import Allowed, Denied, SecurityPolicy, SecurityPolicyEngine, SecurityPolicyResult
 
 _E = TypeVar("_E", bound=TaskEnvironment)
@@ -53,3 +53,30 @@ def make_trusted_fields_policy(fields: tuple[str, ...]) -> SecurityPolicy:
         return Allowed()
 
     return policy
+
+
+def is_trusted_list_and_elements(items: CaMeLList) -> bool:
+    """Check elements explicitly without relying on container-content traversal."""
+    return is_trusted(items) and all(is_trusted(item) for item in items.iterate_python())
+
+
+def validate_email_recipients(
+    kwargs: Mapping[str, CaMeLValue],
+) -> CaMeLList[CaMeLStr] | Denied:
+    """Return a validated combined recipient list for policy evaluation."""
+    primary = kwargs.get("recipients")
+    if not isinstance(primary, CaMeLList):
+        return Denied("Email recipients must be provided as lists of strings.")
+
+    recipients = primary
+    for channel in ("cc", "bcc"):
+        optional = kwargs.get(channel)
+        if optional is None or isinstance(optional, CaMeLNone):
+            continue
+        if not isinstance(optional, CaMeLList):
+            return Denied(f"Email {channel.upper()} recipients must be provided as a list of strings.")
+        recipients = recipients.add(optional)
+
+    if not all(isinstance(recipient, CaMeLStr) for recipient in recipients.iterate_python()):
+        return Denied("All email recipients must be strings.")
+    return recipients
