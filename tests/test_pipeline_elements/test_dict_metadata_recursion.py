@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dict-typed tool outputs carry intended metadata through nested values.
+"""Tool outputs carry intended metadata through supported content values.
 
-Metadata assignment covers mapping keys and values, nested list/tuple/set
-values, and string characters so
-dependency walks observe consistent labels at each reachable value.
+Metadata assignment covers mapping keys and values, supported sequence
+contents, and string characters so extraction and dependency walks observe
+the metadata selected for the tool boundary.
 """
 
 import ast
@@ -49,16 +49,46 @@ def get_rating_reviews_for_restaurants() -> dict:
     return {"reviews": {"olive": ["Great place!", "Loved it."]}}
 
 
+def get_current_day() -> str:
+    """Get the current day."""
+    return "Monday"
+
+
+def get_iban() -> str:
+    """Get an empty IBAN fixture."""
+    return ""
+
+
+def reserve_restaurant() -> str:
+    """Reserve a restaurant."""
+    return "Olive at 19:00"
+
+
+def read_file() -> str:
+    """Read a private file."""
+    return "secret"
+
+
 def get_user_info() -> dict:
     """Get private user information."""
     return {"name": "Emma"}
+
+
+def get_hotels_address() -> dict:
+    """Get an empty hotel-address fixture."""
+    return {}
 
 
 def _namespace() -> ns.Namespace:
     runtime = functions_runtime.FunctionsRuntime()
     runtime.register_function(get_restaurants_address)
     runtime.register_function(get_rating_reviews_for_restaurants)
+    runtime.register_function(get_current_day)
+    runtime.register_function(get_iban)
+    runtime.register_function(reserve_restaurant)
+    runtime.register_function(read_file)
     runtime.register_function(get_user_info)
+    runtime.register_function(get_hotels_address)
     namespace = ns.Namespace.with_builtins()
     return namespace.add_variables(make_agentdojo_namespace(namespace, runtime, None))
 
@@ -177,6 +207,71 @@ def test_mapping_lookup_exposes_value_metadata():
     )
 
 
+@pytest.mark.parametrize(
+    ("tool", "expression", "expected_raw", "inner_sources", "expected_readers"),
+    (
+        (
+            "get_current_day",
+            "get_current_day()",
+            "M",
+            frozenset({sources.SourceEnum.TrustedToolSource}),
+            readers.Public(),
+        ),
+        (
+            "reserve_restaurant",
+            "reserve_restaurant()",
+            "O",
+            frozenset({sources.SourceEnum.TrustedToolSource}),
+            frozenset(),
+        ),
+        ("read_file", "read_file()", "s", frozenset(), frozenset()),
+    ),
+)
+def test_top_level_string_indexing_exposes_tool_metadata(
+    tool: str,
+    expression: str,
+    expected_raw: str,
+    inner_sources: frozenset[sources.SourceEnum],
+    expected_readers: readers.Readers,
+):
+    tool_source = sources.Tool(tool, inner_sources)
+    expected_metadata = Capabilities(frozenset({tool_source}), expected_readers)
+
+    ev = _eval(f"out = {expression}\nselected = out[0]", _namespace())
+    selected = _bound(ev, "selected")
+
+    assert isinstance(selected, value._CaMeLChar)
+    assert selected.raw == expected_raw
+    assert selected.metadata == expected_metadata
+    _assert_effective_metadata(
+        selected,
+        frozenset({tool_source, sources.SourceEnum.CaMeL, sources.SourceEnum.User}),
+        expected_readers,
+    )
+
+
+def test_top_level_string_iteration_exposes_character_metadata():
+    tool = "get_current_day"
+    tool_source = sources.Tool(tool, frozenset({sources.SourceEnum.TrustedToolSource}))
+    expected_metadata = _tool_metadata(
+        tool,
+        frozenset({sources.SourceEnum.TrustedToolSource}),
+        readers.Public(),
+    )
+
+    ev = _eval("out = get_current_day()\nfor item in out:\n    selected = item", _namespace())
+    selected = _bound(ev, "selected")
+
+    assert isinstance(selected, value._CaMeLChar)
+    assert selected.raw == "y"
+    assert selected.metadata == expected_metadata
+    _assert_effective_metadata(
+        selected,
+        frozenset({tool_source, sources.SourceEnum.CaMeL, sources.SourceEnum.User}),
+        readers.Public(),
+    )
+
+
 def test_private_user_info_lookup_exposes_private_trusted_metadata():
     tool = "get_user_info"
     tool_source = sources.Tool(tool, frozenset({sources.SourceEnum.User}))
@@ -193,6 +288,28 @@ def test_private_user_info_lookup_exposes_private_trusted_metadata():
         frozenset({tool_source, sources.SourceEnum.CaMeL, sources.SourceEnum.User}),
         frozenset(),
     )
+
+
+@pytest.mark.parametrize(
+    ("expression", "wrapper_type", "expected_raw", "tool"),
+    (
+        ("get_iban()", value.CaMeLStr, "", "get_iban"),
+        ("get_hotels_address()", value.CaMeLDict, {}, "get_hotels_address"),
+    ),
+)
+def test_empty_tool_outputs_keep_root_metadata(expression, wrapper_type, expected_raw, tool: str):
+    expected_metadata = _tool_metadata(
+        tool,
+        frozenset({sources.SourceEnum.TrustedToolSource}),
+        readers.Public(),
+    )
+
+    ev = _eval(f"out = {expression}", _namespace())
+    output = _bound(ev, "out")
+
+    assert isinstance(output, wrapper_type)
+    assert output.raw == expected_raw
+    assert output.metadata == expected_metadata
 
 
 def test_mapping_keys_and_values_receive_the_same_boundary_metadata():
@@ -237,6 +354,46 @@ def test_nested_container_members_receive_boundary_metadata(container_type):
     assert wrapped.metadata == metadata
     assert container.metadata == metadata
     assert leaf.metadata == metadata
+
+
+@pytest.mark.parametrize("container_type", (value.CaMeLList, value.CaMeLTuple, value.CaMeLSet))
+def test_top_level_sequence_members_use_tool_specific_metadata(container_type):
+    tool = "get_restaurants_address"
+    metadata = Capabilities.default()
+    leaf = value.CaMeLStr.from_raw("123 Main St", metadata, ())
+    wrapped = container_type([leaf], metadata, ())
+
+    converted = _get_metadata_for_ad(wrapped, tool)
+    converted_leaf = next(iter(converted._python_value))
+    expected_leaf_metadata = _tool_metadata(
+        tool,
+        frozenset({sources.SourceEnum.TrustedToolSource}),
+        readers.Public(),
+    )
+    expected_root_metadata = _tool_metadata(tool, frozenset(), readers.Public())
+    assert converted.raw == wrapped.raw
+    assert type(converted) is container_type
+    assert converted.metadata == expected_root_metadata
+    assert converted_leaf.metadata == expected_leaf_metadata
+    assert all(character.metadata == expected_leaf_metadata for character in converted_leaf._python_value)
+    assert wrapped.metadata == metadata
+    assert leaf.metadata == metadata
+
+
+def test_top_level_string_characters_receive_boundary_metadata():
+    tool = "get_restaurants_address"
+    wrapped = value.CaMeLStr.from_raw("address", Capabilities.default(), ())
+
+    converted = _get_metadata_for_ad(wrapped, tool)
+    expected_metadata = _tool_metadata(
+        tool,
+        frozenset({sources.SourceEnum.TrustedToolSource}),
+        readers.Public(),
+    )
+    assert converted.raw == wrapped.raw
+    assert converted.metadata == expected_metadata
+    assert all(character.metadata == expected_metadata for character in converted._python_value)
+    assert wrapped.metadata == Capabilities.default()
 
 
 @pytest.mark.parametrize(

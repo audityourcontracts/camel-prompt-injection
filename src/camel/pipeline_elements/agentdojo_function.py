@@ -158,10 +158,11 @@ def _get_metadata_for_ad(
         case str() if tool in {"cancel_calendar_event", "delete_email", "get_current_day", "get_iban"}:
             # Tools that only return a confirmation with the ID of the deleted object, or the tool
             # that returns the current day. None of them is private and they can't propagate a prompt injection
-            return result.new_with_metadata(
+            return _new_with_metadata_recursive(
+                result,
                 Capabilities(
                     frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.TrustedToolSource}))}), readers.Public()
-                )
+                ),
             )
         case str() if tool in {
             "read_file",
@@ -174,7 +175,9 @@ def _get_metadata_for_ad(
         }:
             # Since the file object does not have any metadata, we need to annotate it as private and untrusted
             # Moreover, in slack channel names and usernames might contain prompt injections, in web as well
-            return result.new_with_metadata(Capabilities(frozenset({sources.Tool(tool, frozenset())}), frozenset()))
+            return _new_with_metadata_recursive(
+                result, Capabilities(frozenset({sources.Tool(tool, frozenset())}), frozenset())
+            )
         case dict() if tool in {"get_user_info", "update_password", "update_user_info", "get_user_information"}:
             # security policy imposes that user info being updated comes from the user (or can't be updated at all)
             return _new_with_metadata_recursive(
@@ -197,18 +200,20 @@ def _get_metadata_for_ad(
             )
         case str() if tool in _TRUSTED_TRAVEL_TOOLS:
             # All travel tool outputs are trusted except from reviews, and the data is public
-            return result.new_with_metadata(
+            return _new_with_metadata_recursive(
+                result,
                 Capabilities(
                     frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.TrustedToolSource}))}), readers.Public()
-                )
+                ),
             )
         case str() if tool in {"reserve_restaurant", "reserve_car_rental", "reserve_hotel"}:
             # These strings contain the name of the entity (which we assumed to be trusted), and dates and times of reservation
             # hence, this is private, but trusted as dates and times can't propagate prompt injections
-            return result.new_with_metadata(
+            return _new_with_metadata_recursive(
+                result,
                 Capabilities(
                     frozenset({sources.Tool(tool, frozenset({sources.SourceEnum.TrustedToolSource}))}), frozenset()
-                )
+                ),
             )
         case float() if tool in {"get_balance"}:
             # Balance is private, but it's a float and can't propagate a prompt injection
